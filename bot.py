@@ -1,9 +1,10 @@
 import logging
-from aiogram import Bot, Dispatcher, executor, types
 import requests
 import json
 import time
 import os
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # ТОКЕНЫ из environment variables
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -11,9 +12,6 @@ GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
 GIGACHAT_CLIENT_ID = os.getenv("GIGACHAT_CLIENT_ID")
 
 logging.basicConfig(level=logging.INFO)
-
-bot = Bot(token=TELEGRAM_TOKEN)
-dp = Dispatcher(bot)
 
 user_data = {}
 
@@ -47,11 +45,13 @@ def analyze_with_gigachat(answers):
     access_token = get_gigachat_access_token()
     if not access_token:
         return "Ошибка подключения к GigaChat"
+    
     url = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json"
     }
+    
     prompt = f"""Проанализируй ответы клиента и создай 5 персональных профилей (персон) для воронки продаж.
 
 Ответы клиента:
@@ -65,11 +65,13 @@ def analyze_with_gigachat(answers):
 - **Возражения**
 
 Формат вывода - структурированный список из 5 персон."""
+    
     payload = {
         "model": "GigaChat",
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.7
     }
+    
     try:
         response = requests.post(url, headers=headers, json=payload, verify=False)
         response.raise_for_status()
@@ -79,33 +81,42 @@ def analyze_with_gigachat(answers):
         logging.error(f"Ошибка анализа GigaChat: {e}")
         return f"Ошибка анализа: {str(e)}"
 
-@dp.message_handler(commands=['start'])
-async def cmd_start(message: types.Message):
-    user_id = message.from_user.id
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
     user_data[user_id] = {"answers": [], "question_index": 0}
-    await message.answer(
+    await update.message.reply_text(
         "👋 Привет! Я помогу определить твою целевую аудиторию.\n\n"
         "Ответь на 7 вопросов, и я создам для тебя 5 персональных профилей клиентов.\n\n"
         f"{QUESTIONS[0]}"
     )
 
-@dp.message_handler(content_types=['text'])
-async def handle_answer(message: types.Message):
-    user_id = message.from_user.id
+async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
     if user_id not in user_data:
-        await message.answer("Нажми /start чтобы начать")
+        await update.message.reply_text("Нажми /start чтобы начать")
         return
+    
     data = user_data[user_id]
-    data["answers"].append(message.text)
+    data["answers"].append(update.message.text)
     data["question_index"] += 1
+    
     if data["question_index"] < len(QUESTIONS):
-        await message.answer(QUESTIONS[data["question_index"]])
+        await update.message.reply_text(QUESTIONS[data["question_index"]])
     else:
-        await message.answer("⏳ Анализирую твои ответы с помощью GigaChat AI...")
+        await update.message.reply_text("⏳ Анализирую твои ответы с помощью GigaChat AI...")
         analysis = analyze_with_gigachat(data["answers"])
-        await message.answer(f"✅ **Результаты анализа:**\n\n{analysis}")
+        await update.message.reply_text(f"✅ **Результаты анализа:**\n\n{analysis}")
         del user_data[user_id]
 
-if __name__ == '__main__':
+def main():
     print("🤖 Бот запущен и ожидает сообщений...")
-    executor.start_polling(dp, skip_updates=True)
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_answer))
+    
+    app.run_polling()
+
+if __name__ == '__main__':
+    main()
